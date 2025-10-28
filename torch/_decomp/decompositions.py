@@ -664,15 +664,17 @@ def binary_cross_entropy_backward(
 @out_wrapper()
 def linear_cross_entropy(
     input: Tensor,
-    weight: Tensor,
+    linear_weight: Tensor,
     target: Tensor,
-    bias: Optional[Tensor] = None,
+    linear_bias: Optional[Tensor] = None,
     reduction: int = Reduction.MEAN.value,
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
-    chunking_strategy: str = "auto",
+    chunking_strategy: str = "none",
+    vocab_chunk_size: Optional[int] = None,
+    batch_chunk_size: Optional[int] = None,
 ) -> Tensor:
-    logits = aten.linear.default(input, weight, bias)
+    logits = aten.linear.default(input, linear_weight, linear_bias)
     logits_flat = aten.reshape.default(logits, [-1, logits.size(-1)])
     target_flat = aten.reshape.default(target, [-1])
     if target.dtype.is_floating_point:
@@ -692,9 +694,9 @@ def linear_cross_entropy(
 
         return _LINEAR_CROSS_ENTROPY_NAIVE(  # type: ignore[misc]
             input,
-            weight,
+            linear_weight,
             target,
-            bias,
+            linear_bias,
             reduction_str,
             ignore_index,
             label_smoothing,
@@ -717,15 +719,17 @@ def linear_cross_entropy(
 def linear_cross_entropy_backward(
     grad_output: Tensor,
     input: Tensor,
-    weight: Tensor,
+    linear_weight: Tensor,
     target: Tensor,
-    bias: Optional[Tensor] = None,
+    linear_bias: Optional[Tensor] = None,
     reduction: int = Reduction.MEAN.value,
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
-    chunking_strategy: str = "auto",
+    chunking_strategy: str = "none",
+    vocab_chunk_size: Optional[int] = None,
+    batch_chunk_size: Optional[int] = None,
 ) -> tuple[Tensor, Tensor, Optional[Tensor]]:
-    logits = aten.linear.default(input, weight, bias)
+    logits = aten.linear.default(input, linear_weight, linear_bias)
     logits_flat = aten.reshape.default(logits, [-1, logits.size(-1)])
     input_flat = aten.reshape.default(input, [-1, input.size(-1)])
     target_flat = aten.reshape.default(target, [-1])
@@ -747,16 +751,18 @@ def linear_cross_entropy_backward(
 
         ref = _LINEAR_CROSS_ENTROPY_NAIVE(  # type: ignore[misc]
             input,
-            weight,
+            linear_weight,
             target,
-            bias,
+            linear_bias,
             reduction_str,
             ignore_index,
             label_smoothing,
         )
         grad_inputs = torch.autograd.grad(
             ref,
-            (input, weight) if bias is None else (input, weight, bias),
+            (input, linear_weight)
+            if linear_bias is None
+            else (input, linear_weight, linear_bias),
             grad_output,
             retain_graph=True,
             allow_unused=True,
@@ -765,14 +771,14 @@ def linear_cross_entropy_backward(
             grad_inputs[0] if grad_inputs[0] is not None else torch.zeros_like(input)
         )
         grad_weight = (
-            grad_inputs[1] if grad_inputs[1] is not None else torch.zeros_like(weight)
+            grad_inputs[1] if grad_inputs[1] is not None else torch.zeros_like(linear_weight)
         )
-        grad_bias = grad_inputs[2] if bias is not None else None
+        grad_bias = grad_inputs[2] if linear_bias is not None else None
         return grad_input, grad_weight, grad_bias
 
     target_indices = aten.to.dtype(target_flat, torch.long)
 
-    vocab_size = weight.size(0)
+    vocab_size = linear_weight.size(0)
     prob = aten.softmax.default(logits_flat, -1)
     valid_mask = aten.ne(target_indices, ignore_index)
     safe_targets = aten.where(
@@ -809,10 +815,10 @@ def linear_cross_entropy_backward(
         scale = grad_output_tensor / aten.clamp_min(valid_count, 1.0)
         grad_logits = grad_logits * scale
 
-    grad_input_flat = aten.mm(grad_logits, weight)
+    grad_input_flat = aten.mm(grad_logits, linear_weight)
     grad_input = aten.reshape.default(grad_input_flat, input.shape)
     grad_weight = aten.mm(aten.transpose(grad_logits, 0, 1), input_flat)
-    if bias is not None:
+    if linear_bias is not None:
         grad_bias_result: Optional[Tensor] = aten.sum.dim_IntList(grad_logits, [0])
     else:
         grad_bias_result = None

@@ -3512,14 +3512,14 @@ def cross_entropy(
 
 def _linear_cross_entropy_naive(
     input: Tensor,
-    weight: Tensor,
+    linear_weight: Tensor,
     target: Tensor,
-    bias: Optional[Tensor],
+    linear_bias: Optional[Tensor],
     reduction: str,
     ignore_index: int,
     label_smoothing: float,
 ) -> Tensor:
-    logits = linear(input, weight, bias)
+    logits = linear(input, linear_weight, linear_bias)
     logits_flat = logits.reshape(-1, logits.size(-1))
     target_flat = target.reshape(-1)
     loss = cross_entropy(
@@ -3536,34 +3536,40 @@ def _linear_cross_entropy_naive(
 
 def linear_cross_entropy(
     input: Tensor,
-    weight: Tensor,
+    linear_weight: Tensor,
     target: Tensor,
-    bias: Optional[Tensor] = None,
+    *,
+    linear_bias: Optional[Tensor] = None,
     reduction: str = "mean",
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
-    chunking_strategy: str = "auto",
+    chunking_strategy: str = "none",
+    vocab_chunk_size: Optional[int] = None,
+    batch_chunk_size: Optional[int] = None,
 ) -> Tensor:
     r"""Compute fused linear transformation and cross entropy loss on CPU.
 
     This is a convenience wrapper around :func:`linear` followed by
     :func:`cross_entropy`.  When the inputs live on CPU it uses a fused ATen
     kernel that chunks the vocabulary or batch dimension to avoid materialising
-    large logit tensors.  For other devices it falls back to the unfused
-    composition.
+    large logit tensors; the chunk sizes can be overridden with
+    ``vocab_chunk_size`` and ``batch_chunk_size``.  For other devices it falls
+    back to the unfused composition.
     """
-    if has_torch_function_variadic(input, weight, target, bias):
+    if has_torch_function_variadic(input, linear_weight, target, linear_bias):
         return handle_torch_function(
             linear_cross_entropy,
-            (input, weight, target, bias),
+            (input, linear_weight, target, linear_bias),
             input,
-            weight,
+            linear_weight,
             target,
-            bias=bias,
+            linear_bias=linear_bias,
             reduction=reduction,
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
             chunking_strategy=chunking_strategy,
+            vocab_chunk_size=vocab_chunk_size,
+            batch_chunk_size=batch_chunk_size,
         )
 
     if not isinstance(reduction, str):
@@ -3587,23 +3593,33 @@ def linear_cross_entropy(
             f"label_smoothing must be between 0.0 and 1.0, got {label_smoothing}"
         )
 
-    if chunking_strategy not in ("auto", "vocab", "batch", "none"):
+    if chunking_strategy not in ("vocab", "batch", "none"):
         raise ValueError(
-            "chunking_strategy must be one of ('auto', 'vocab', 'batch', 'none'), "
+            "chunking_strategy must be one of ('vocab', 'batch', 'none'), "
             f"got '{chunking_strategy}'"
+        )
+
+    if vocab_chunk_size is not None and vocab_chunk_size <= 0:
+        raise ValueError(
+            f"vocab_chunk_size must be positive when provided, got {vocab_chunk_size}"
+        )
+
+    if batch_chunk_size is not None and batch_chunk_size <= 0:
+        raise ValueError(
+            f"batch_chunk_size must be positive when provided, got {batch_chunk_size}"
         )
 
     if (
         input.device.type != "cpu"
-        or weight.device != input.device
+        or linear_weight.device != input.device
         or target.device != input.device
-        or (bias is not None and bias.device != input.device)
+        or (linear_bias is not None and linear_bias.device != input.device)
     ):
         result = _linear_cross_entropy_naive(
             input,
-            weight,
+            linear_weight,
             target,
-            bias,
+            linear_bias,
             reduction,
             ignore_index,
             label_smoothing,
@@ -3616,44 +3632,61 @@ def linear_cross_entropy(
         if not op.has_kernel_for_dispatch_key("CPU"):
             result = _linear_cross_entropy_naive(
                 input,
-                weight,
+                linear_weight,
                 target,
-                bias,
+                linear_bias,
                 reduction,
                 ignore_index,
                 label_smoothing,
             )
         else:
-            reduction_enum = _Reduction.get_enum(reduction)
-            needs_grad = torch.is_grad_enabled() and (
-                input.requires_grad
-                or weight.requires_grad
-                or (bias is not None and bias.requires_grad)
+            schema = op._schema
+            supports_chunk_sizes = any(
+                arg.name == "vocab_chunk_size" for arg in schema.arguments
             )
-            # Some downstream builds may omit the generated autograd kernel; if
-            # that happens we still provide gradients by delegating to the
-            # unfused implementation.
-            if needs_grad and not op.has_kernel_for_dispatch_key("AutogradCPU"):
+            if not supports_chunk_sizes:
                 result = _linear_cross_entropy_naive(
                     input,
-                    weight,
+                    linear_weight,
                     target,
-                    bias,
+                    linear_bias,
                     reduction,
                     ignore_index,
                     label_smoothing,
                 )
             else:
-                result = torch.ops.aten.linear_cross_entropy(
-                    input,
-                    weight,
-                    target,
-                    bias,
-                    reduction_enum,
-                    ignore_index,
-                    label_smoothing,
-                    chunking_strategy,
+                reduction_enum = _Reduction.get_enum(reduction)
+                needs_grad = torch.is_grad_enabled() and (
+                    input.requires_grad
+                    or linear_weight.requires_grad
+                    or (linear_bias is not None and linear_bias.requires_grad)
                 )
+                # Some downstream builds may omit the generated autograd kernel; if
+                # that happens we still provide gradients by delegating to the
+                # unfused implementation.
+                if needs_grad and not op.has_kernel_for_dispatch_key("AutogradCPU"):
+                    result = _linear_cross_entropy_naive(
+                        input,
+                        linear_weight,
+                        target,
+                        linear_bias,
+                        reduction,
+                        ignore_index,
+                        label_smoothing,
+                    )
+                else:
+                    result = torch.ops.aten.linear_cross_entropy(
+                        input,
+                        linear_weight,
+                        target,
+                        linear_bias=linear_bias,
+                        reduction=reduction_enum,
+                        ignore_index=ignore_index,
+                        label_smoothing=label_smoothing,
+                        chunking_strategy=chunking_strategy,
+                        vocab_chunk_size=vocab_chunk_size,
+                        batch_chunk_size=batch_chunk_size,
+                    )
 
     if reduction == "none":
         return result.reshape(target.shape)

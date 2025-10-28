@@ -6800,19 +6800,22 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
 
 def reference_linear_cross_entropy(
     input,
-    weight,
+    linear_weight,
     target,
-    bias=None,
+    *,
+    linear_bias=None,
     reduction="mean",
     ignore_index=-100,
     label_smoothing=0.0,
-    chunking_strategy="auto",
+    chunking_strategy="none",
+    vocab_chunk_size=None,
+    batch_chunk_size=None,
 ):
     return F._linear_cross_entropy_naive(
         input,
-        weight,
+        linear_weight,
         target,
-        bias,
+        linear_bias,
         reduction,
         ignore_index,
         label_smoothing,
