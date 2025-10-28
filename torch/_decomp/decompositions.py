@@ -771,7 +771,9 @@ def linear_cross_entropy_backward(
             grad_inputs[0] if grad_inputs[0] is not None else torch.zeros_like(input)
         )
         grad_weight = (
-            grad_inputs[1] if grad_inputs[1] is not None else torch.zeros_like(linear_weight)
+            grad_inputs[1]
+            if grad_inputs[1] is not None
+            else torch.zeros_like(linear_weight)
         )
         grad_bias = grad_inputs[2] if linear_bias is not None else None
         return grad_input, grad_weight, grad_bias

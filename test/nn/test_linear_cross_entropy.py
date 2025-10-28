@@ -10,14 +10,14 @@ from torch.testing._internal.common_utils import run_tests, TestCase
 
 def _reference_linear_cross_entropy(
     input: torch.Tensor,
-    weight: torch.Tensor,
+    linear_weight: torch.Tensor,
     target: torch.Tensor,
-    bias: Optional[torch.Tensor],
+    linear_bias: Optional[torch.Tensor],
     reduction: str,
     ignore_index: int,
     label_smoothing: float,
 ) -> torch.Tensor:
-    logits = F.linear(input, weight, bias)
+    logits = F.linear(input, linear_weight, linear_bias)
     logits_flat = logits.reshape(-1, logits.size(-1))
     target_flat = target.reshape(-1)
     loss = F.cross_entropy(
@@ -36,42 +36,46 @@ class TestLinearCrossEntropyCPU(TestCase):
     def _compare_with_reference(
         self,
         input: torch.Tensor,
-        weight: torch.Tensor,
+        linear_weight: torch.Tensor,
         target: torch.Tensor,
-        bias: Optional[torch.Tensor],
+        linear_bias: Optional[torch.Tensor],
         *,
         reduction: str = "mean",
         ignore_index: int = -100,
         label_smoothing: float = 0.0,
-        chunking_strategy: str = "auto",
+        chunking_strategy: str = "none",
+        vocab_chunk_size: Optional[int] = None,
+        batch_chunk_size: Optional[int] = None,
     ) -> None:
         input_clone = input.clone(memory_format=torch.preserve_format).requires_grad_(
             input.requires_grad
         )
-        weight_clone = weight.clone(memory_format=torch.preserve_format).requires_grad_(
-            weight.requires_grad
-        )
-        bias_clone = None
-        if bias is not None:
-            bias_clone = bias.clone(memory_format=torch.preserve_format).requires_grad_(
-                bias.requires_grad
-            )
+        weight_clone = linear_weight.clone(
+            memory_format=torch.preserve_format
+        ).requires_grad_(linear_weight.requires_grad)
+        linear_bias_clone = None
+        if linear_bias is not None:
+            linear_bias_clone = linear_bias.clone(
+                memory_format=torch.preserve_format
+            ).requires_grad_(linear_bias.requires_grad)
 
         fused = F.linear_cross_entropy(
             input,
-            weight,
+            linear_weight,
             target,
-            bias,
+            linear_bias=linear_bias,
             reduction=reduction,
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
             chunking_strategy=chunking_strategy,
+            vocab_chunk_size=vocab_chunk_size,
+            batch_chunk_size=batch_chunk_size,
         )
         ref = _reference_linear_cross_entropy(
             input_clone,
             weight_clone,
             target,
-            bias_clone,
+            linear_bias_clone,
             reduction=reduction,
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
@@ -79,11 +83,13 @@ class TestLinearCrossEntropyCPU(TestCase):
 
         if fused.requires_grad:
             grad_args = [
-                tensor for tensor in (input, weight, bias) if tensor is not None
+                tensor
+                for tensor in (input, linear_weight, linear_bias)
+                if tensor is not None
             ]
             grad_args_ref = [
                 tensor
-                for tensor in (input_clone, weight_clone, bias_clone)
+                for tensor in (input_clone, weight_clone, linear_bias_clone)
                 if tensor is not None
             ]
 
@@ -135,7 +141,7 @@ class TestLinearCrossEntropyCPU(TestCase):
         bias = torch.randn(6000, requires_grad=True)
         target = torch.randint(0, 6000, (2, 3))
         self._compare_with_reference(
-            input, weight, target, bias, chunking_strategy="auto"
+            input, weight, target, bias, chunking_strategy="none"
         )
 
     def test_vocab_chunking(self) -> None:
@@ -177,7 +183,7 @@ class TestLinearCrossEntropyCPU(TestCase):
         weight = torch.randn(8, 6)
         target = torch.randint(0, 8, (2, 3, 4, 5))
         self._compare_with_reference(
-            input, weight, target, None, chunking_strategy="auto"
+            input, weight, target, None, chunking_strategy="batch"
         )
 
     def test_all_targets_ignored(self) -> None:
@@ -244,7 +250,7 @@ class TestLinearCrossEntropyCPU(TestCase):
                 inp,
                 wgt,
                 target,
-                b,
+                linear_bias=b,
                 reduction="mean",
                 chunking_strategy="vocab",
             )
