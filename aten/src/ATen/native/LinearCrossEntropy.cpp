@@ -130,7 +130,7 @@ LinearCrossEntropyForwardResult linear_cross_entropy_forward_batch_chunking(
     int64_t chunk_size,
     bool save_for_backward);
 
-LinearCrossEntropyForwardResult linear_cross_entropy_forward_impl(
+static LinearCrossEntropyForwardResult linear_cross_entropy_forward_impl(
     const Tensor& input,
     const Tensor& linear_weight,
     const Tensor& target,
@@ -272,11 +272,12 @@ LinearCrossEntropyForwardResult linear_cross_entropy_forward_naive(
     if (reduction == Reduction::Sum) {
       loss_result = total_loss;
     } else {
-      const int64_t valid_count = valid_mask.sum().item<int64_t>();
-      if (valid_count == 0) {
-        loss_result = total_loss;
+      auto denom_long = valid_mask.sum();
+      auto denom = denom_long.to(total_loss.scalar_type());
+      if (denom_long.item<int64_t>() == 0) {
+        loss_result = denom.div(denom);
       } else {
-        loss_result = total_loss.div(static_cast<double>(valid_count));
+        loss_result = total_loss.div(denom);
       }
     }
   }
@@ -396,11 +397,12 @@ LinearCrossEntropyForwardResult linear_cross_entropy_forward_vocab_chunking(
     if (reduction == Reduction::Sum) {
       loss_result = total_loss;
     } else {
-      const int64_t valid_count = valid_mask.sum().item<int64_t>();
-      if (valid_count == 0) {
-        loss_result = total_loss;
+      auto denom_long = valid_mask.sum();
+      auto denom = denom_long.to(total_loss.scalar_type());
+      if (denom_long.item<int64_t>() == 0) {
+        loss_result = denom.div(denom);
       } else {
-        loss_result = total_loss.div(static_cast<double>(valid_count));
+        loss_result = total_loss.div(denom);
       }
     }
   }
@@ -509,10 +511,16 @@ LinearCrossEntropyForwardResult linear_cross_entropy_forward_batch_chunking(
   Tensor loss_result;
   if (reduction == Reduction::None) {
     loss_result = losses_buffer.reshape(target.sizes());
-  } else if (reduction == Reduction::Sum || valid_count == 0) {
+  } else if (reduction == Reduction::Sum) {
     loss_result = total_loss;
   } else {
-    loss_result = total_loss.div(static_cast<double>(valid_count));
+    auto denom_long = valid_mask.sum();
+    auto denom = denom_long.to(total_loss.scalar_type());
+    if (denom_long.item<int64_t>() == 0) {
+      loss_result = denom.div(denom);
+    } else {
+      loss_result = total_loss.div(denom);
+    }
   }
 
   LinearCrossEntropyForwardResult result;
@@ -1037,7 +1045,7 @@ class LinearCrossEntropyAutogradFunction
 
 } // anonymous namespace
 
-Tensor linear_cross_entropy_autograd_dispatch(
+static Tensor linear_cross_entropy_autograd_dispatch(
     const Tensor& input,
     const Tensor& linear_weight,
     const Tensor& target,
