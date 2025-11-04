@@ -1851,7 +1851,6 @@ class CppWrapperCpu(PythonWrapperCodegen):
             ]
             return f"RAIIAtenTensorHandle({tmp_AtenTensorHandle})", tmp_call_strs
 
-        # New: use collapsed info (matches python logic)
         collapsed = collapsible and original_offset == d_offset
         if collapsed:
             same_layout = (size == d_size and stride == d_stride)
@@ -1865,7 +1864,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
             base_dtype = data.dtype
 
         if same_layout:
-            # pure dtype view or simple handle dup
+            # pure dtypeview
             if dtype is not None and dtype != base_dtype:
                 final_tensor_str, tmp_call_strs = create_dtypeview_call(data.get_name())
             else:
