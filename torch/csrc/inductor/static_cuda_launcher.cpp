@@ -60,11 +60,10 @@ CUdeviceptr getPointer(PyObject* obj) {
   CUdeviceptr data_ptr = 0;
 
   if (THPUtils_checkLong(obj)) {
-    
 #if defined(USE_ROCM)
-  data_ptr = reinterpret_cast<hipDeviceptr_t>(THPUtils_unpackUInt64(obj));
+    data_ptr = reinterpret_cast<hipDeviceptr_t>(THPUtils_unpackUInt64(obj));
 #else
-  data_ptr = THPUtils_unpackUInt64(obj);
+    data_ptr = THPUtils_unpackUInt64(obj);
 #endif
 
     return data_ptr;
@@ -122,13 +121,10 @@ CUfunction loadKernel(
 
 #if defined(USE_ROCM)
   AT_CUDA_DRIVER_CHECK(hipModuleLoad(&mod, filePath.c_str()));
-  AT_CUDA_DRIVER_CHECK(
-      hipModuleGetFunction(&func, mod, funcName.c_str()));
+  AT_CUDA_DRIVER_CHECK(hipModuleGetFunction(&func, mod, funcName.c_str()));
   int shared_optin = 0;
   AT_CUDA_DRIVER_CHECK(hipDeviceGetAttribute(
-      &shared_optin,
-      hipDeviceAttributeSharedMemPerBlockOptin,
-      device));
+      &shared_optin, hipDeviceAttributeSharedMemPerBlockOptin, device));
 
 #else
   AT_CUDA_DRIVER_CHECK(nvrtc().cuModuleLoad(&mod, filePath.c_str()));
@@ -139,7 +135,7 @@ CUfunction loadKernel(
       &shared_optin,
       CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN,
       device));
-  
+
 #endif
 
   // Shared memory logic from triton/third-party/nvidia/backend/driver.c
@@ -160,10 +156,8 @@ CUfunction loadKernel(
       " Reducing block sizes or `num_stages` may help.");
   if (sharedMemBytes > SHARED_MEM_STATIC_MAX &&
       shared_optin > SHARED_MEM_STATIC_MAX) {
-
 #if defined(USE_ROCM)
-    AT_CUDA_DRIVER_CHECK(
-        hipFuncSetCacheConfig(func, hipFuncCachePreferShared));
+    AT_CUDA_DRIVER_CHECK(hipFuncSetCacheConfig(func, hipFuncCachePreferShared));
     int shared_total = 0, shared_static = 0;
     AT_CUDA_DRIVER_CHECK(hipDeviceGetAttribute(
         &shared_total,
@@ -173,8 +167,8 @@ CUfunction loadKernel(
         &shared_static, HIP_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, func));
     AT_CUDA_DRIVER_CHECK(hipFuncSetAttribute(
         func,
-        CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-        shared_optin - shared_static));   
+        hipFuncAttributeMaxDynamicSharedMemorySize,
+        shared_optin - shared_static));
 
 #else
     AT_CUDA_DRIVER_CHECK(
@@ -189,7 +183,7 @@ CUfunction loadKernel(
     AT_CUDA_DRIVER_CHECK(nvrtc().cuFuncSetAttribute(
         func,
         CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-        shared_optin - shared_static));  
+        shared_optin - shared_static));
 #endif
   }
   return func;
@@ -211,7 +205,7 @@ inline void launchKernel(
   AT_CUDA_DRIVER_CHECK(hipGetDevice(&device));
   int warp_size = 0;
   AT_CUDA_DRIVER_CHECK(
-        hipDeviceGetAttribute(&warp_size, hipDeviceAttributeWarpSize, device));
+      hipDeviceGetAttribute(&warp_size, hipDeviceAttributeWarpSize, device));
 
   AT_CUDA_DRIVER_CHECK(hipModuleLaunchKernel(
       func,
@@ -225,7 +219,7 @@ inline void launchKernel(
       stream,
       args,
       nullptr));
-  
+
 #else
   AT_CUDA_DRIVER_CHECK(nvrtc().cuLaunchKernel(
       func,
@@ -345,11 +339,10 @@ PyObject* load_kernel(PyObject* self, PyObject* args) {
   CUdevice device = static_cast<CUdevice>(device_ptr); // NOLINT
   CUfunction func = nullptr;
   func = loadKernel(filePath, funcName, sharedMemBytes, device);
- 
 
 #if defined(USE_ROCM)
   AT_CUDA_DRIVER_CHECK(
-                  hipFuncGetAttribute(&n_regs, HIP_FUNC_ATTRIBUTE_NUM_REGS, func));
+      hipFuncGetAttribute(&n_regs, HIP_FUNC_ATTRIBUTE_NUM_REGS, func));
   AT_CUDA_DRIVER_CHECK(hipFuncGetAttribute(
       &n_spills, HIP_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, func));
 
@@ -358,7 +351,7 @@ PyObject* load_kernel(PyObject* self, PyObject* args) {
       nvrtc().cuFuncGetAttribute(&n_regs, CU_FUNC_ATTRIBUTE_NUM_REGS, func));
   AT_CUDA_DRIVER_CHECK(nvrtc().cuFuncGetAttribute(
       &n_spills, CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, func));
-  
+
 #endif
   n_spills /= 4;
   // Return a tuple of CUFunction, n_regs, n_spills
@@ -472,9 +465,9 @@ PyObject* launch_kernel(PyObject* self, PyObject* args) {
   }
   CUcontext pctx = nullptr;
 #if defined(USE_ROCM)
-    AT_CUDA_DRIVER_CHECK(hipCtxGetCurrent(&pctx));
+  AT_CUDA_DRIVER_CHECK(hipCtxGetCurrent(&pctx));
 #else
-    AT_CUDA_DRIVER_CHECK(nvrtc().cuCtxGetCurrent(&pctx));
+  AT_CUDA_DRIVER_CHECK(nvrtc().cuCtxGetCurrent(&pctx));
 #endif
 
   if (!pctx) {
@@ -488,9 +481,8 @@ PyObject* launch_kernel(PyObject* self, PyObject* args) {
     AT_CUDA_DRIVER_CHECK(nvrtc().cuDeviceGet(&device, 0));
     AT_CUDA_DRIVER_CHECK(nvrtc().cuDevicePrimaryCtxRetain(&pctx, device));
     AT_CUDA_DRIVER_CHECK(nvrtc().cuCtxSetCurrent(pctx));
-    
-#endif
 
+#endif
   }
   CUfunction func = reinterpret_cast<CUfunction>(func_ptr); // NOLINT
   cudaStream_t cudaStream = reinterpret_cast<cudaStream_t>(stream); // NOLINT
