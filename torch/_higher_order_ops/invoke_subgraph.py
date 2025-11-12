@@ -66,8 +66,13 @@ class NestedCompileRegionOptions:
     # If backend == "inductor", the configs
     inductor_configs: Optional[dict[str, Any]] = None
 
-    # If not None, add "partitioner" to HOP node meta
-    partitioner: Optional[Callable] = None
+    # Note: [InvokeSubgraphHOP Partitioner]
+    # If not None, add "partitioner" to HOP node meta.
+    # If Callable, directly assign the callable, but the callable cannot be pickled
+    # If str, the options are "default_partition" and "min_cut_rematerialization_partition".
+    # The HOP joint graph will be partitioned using the corresponding functions in
+    # torch/_functorch/partitioners.py
+    partitioner: Optional[Callable | str] = None
 
     # TODO: add decomposition function
 

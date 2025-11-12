@@ -43,6 +43,10 @@ from torch._dynamo.variables.functions import UserFunctionVariable
 from torch._dynamo.variables.nn_module import UnspecializedNNModuleVariable
 from torch._dynamo.variables.tensor import SymNodeVariable
 from torch._guards import Source
+from torch._higher_order_ops.invoke_subgraph import (
+    NestedCompileBackend,
+    NestedCompileRegionOptions,
+)
 from torch._ops import HigherOrderOperator
 from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch.utils import _pytree as pytree
@@ -252,7 +256,6 @@ def _make_inlined(tx: "InstructionTranslator", f):
     return inline_call
 
 
-<<<<<<< HEAD
 def _call_function_with_auto_output_flattening(
     tx: "InstructionTranslator",
     fn: Any,
@@ -261,6 +264,7 @@ def _call_function_with_auto_output_flattening(
     flat_example_value: Any,
     body_r: Optional[VariableTracker],
     graph_output_vts: VariableTracker | tuple[VariableTracker, ...],
+    backend_options: Optional[NestedCompileRegionOptions] = None,
 ) -> Optional[VariableTracker]:
     """
     Create HOP call node and reproxify output VTs for HOPs with auto output semantics.
@@ -287,14 +291,30 @@ def _call_function_with_auto_output_flattening(
     from .builder import wrap_fx_proxy
 
     # Store the invocation as a call
+    proxy = tx.output.create_proxy(
+        "call_function",
+        fn,
+        args=args,
+        kwargs=kwargs,
+    )
+
+    # Set backend metadata if provided
+    if backend_options is not None:
+        if "custom" not in proxy.node.meta:
+            proxy.node.meta["custom"] = {}
+        if backend_options.backend == NestedCompileBackend.INDUCTOR:
+            inductor_configs = {}
+            if backend_options.inductor_configs:
+                inductor_configs = copy.deepcopy(backend_options.inductor_configs)
+            proxy.node.meta["custom"]["compile_with_inductor"] = {
+                "inductor_configs": inductor_configs
+            }
+        if backend_options.partitioner is not None:
+            proxy.node.meta["custom"]["partitioner"] = backend_options.partitioner
+
     flat_variable = wrap_fx_proxy(
         tx=tx,
-        proxy=tx.output.create_proxy(
-            "call_function",
-            fn,
-            args=args,
-            kwargs=kwargs,
-        ),
+        proxy=proxy,
         example_value=flat_example_value,
     )
 
@@ -323,12 +343,6 @@ def _call_function_with_auto_output_flattening(
                 )
                 orig_vt.proxy = subgraph_vt.proxy
     return body_r
-=======
-from torch._higher_order_ops.invoke_subgraph import (
-    NestedCompileBackend,
-    NestedCompileRegionOptions,
-)
->>>>>>> 4407acbb20a (Add test for unbacked symint expression)
 
 
 def _call_function_and_unflatten_output(
@@ -339,35 +353,18 @@ def _call_function_and_unflatten_output(
     flat_example_value,
     ret_spec,
     body_r,
-    backend_options: Optional[NestedCompileRegionOptions] = None,
 ):
     from .builder import wrap_fx_proxy
 
     # Store the invocation as a call
-    proxy = tx.output.create_proxy(
-        "call_function",
-        fn,
-        args=args,
-        kwargs=kwargs,
-    )
-
-    # Set backend metadata if provided
-    if backend_options is not None:
-        if "custom" not in proxy.node.meta:
-            proxy.node.meta["custom"] = {}
-        if backend_options.backend == NestedCompileBackend.INDUCTOR:
-            inductor_configs = {}
-            if backend_options.inductor_configs:
-                inductor_configs = copy.deepcopy(backend_options.inductor_configs)
-            proxy.node.meta["custom"]["compile_with_inductor"] = {
-                "inductor_configs": inductor_configs
-            }
-        if backend_options.partitioner is not None:
-            proxy.node.meta["custom"]["partitioner"] = backend_options.partitioner
-
     flat_variable = wrap_fx_proxy(
         tx=tx,
-        proxy=proxy,
+        proxy=tx.output.create_proxy(
+            "call_function",
+            fn,
+            args=args,
+            kwargs=kwargs,
+        ),
         example_value=flat_example_value,
     )
 
@@ -4266,14 +4263,6 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
                 ],
             )
 
-<<<<<<< HEAD
-=======
-        flat_example_value = pytree.tree_map_only(
-            torch.fx.Proxy,
-            lambda a: a.node.meta["example_value"],
-            body_r.as_proxy(),
-        )
-
         # Extract backend from the function if it was decorated with nested_compile_region(backend=...)
         backend_options = None
         fn_var = args[0]
@@ -4286,7 +4275,6 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
             except Exception:
                 pass
 
->>>>>>> 4407acbb20a (Add test for unbacked symint expression)
         p_args = (
             p_args[0],
             body_name,
@@ -4299,11 +4287,8 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
             p_kwargs,
             example_value,
             body_r,
-<<<<<<< HEAD
             body_graph_output_vts,
-=======
             backend_options=backend_options,
->>>>>>> 4407acbb20a (Add test for unbacked symint expression)
         )
 
 

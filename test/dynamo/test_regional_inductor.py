@@ -472,22 +472,32 @@ class RegionalInductorTests(torch._inductor.test_case.TestCase):
         # flex in forward and flex_backward in backward
         self.assertEqual(len(codes), 2)
 
-    @parametrize("serialize", [False])  # , True
+    @parametrize("serialize", [True, False])
     def test_invoke_subgraph_regional_compile(self, serialize):
         call_test_partitioner_ct = 0
+        original_default_partitioner = torch._functorch.partitioners.default_partition
 
-        def test_partitioner(*args, **kwargs):
+        def test_partitioner(
+            *args, **kwargs
+        ) -> tuple[torch.fx.GraphModule, torch.fx.GraphModule]:
             nonlocal call_test_partitioner_ct
             call_test_partitioner_ct += 1
-            return torch._functorch.partitioners.default_partition(*args, **kwargs)
+            return original_default_partitioner(*args, **kwargs)
 
+        # pyrefly: ignore [not-iterable]
+        if serialize:
+            # Callable cannot be serialized
+            torch._functorch.partitioners.default_partition = test_partitioner
+            partitioner = "default_partition"
+        else:
+            partitioner = test_partitioner
         backend = NestedCompileRegionOptions(
             backend=NestedCompileBackend.INDUCTOR,
             inductor_configs={
                 "max_autotune": True,
                 "triton.cudagraphs": False,
             },
-            partitioner=test_partitioner,
+            partitioner=partitioner,
         )
 
         @torch.compiler.nested_compile_region(backend_options=backend)
@@ -538,6 +548,9 @@ class RegionalInductorTests(torch._inductor.test_case.TestCase):
             self.assertEqual(res, true_res)
         finally:
             torch._inductor.standalone_compile = original_compile
+            torch._functorch.partitioners.default_partition = (
+                original_default_partitioner
+            )
 
 
 @skipIfTorchDynamo("Not a suitable dynamo wrapped test")
