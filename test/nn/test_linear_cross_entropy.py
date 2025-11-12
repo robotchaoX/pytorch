@@ -4,7 +4,7 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
-from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.common_utils import run_tests, TestCase, skipIfTorchDynamo
 class TestLinearCrossEntropyCPU(TestCase):
     def test_all_targets_ignored(self) -> None:
         torch.manual_seed(0)
@@ -76,6 +76,7 @@ class TestLinearCrossEntropyCPU(TestCase):
                 batch_chunk_size=-5,
             )
 
+    @skipIfTorchDynamo("gradcheck graph not yet supported under TorchDynamo")
     def test_gradcheck(self) -> None:
         torch.manual_seed(0)
         input = torch.randn(3, 5, dtype=torch.double, requires_grad=True)

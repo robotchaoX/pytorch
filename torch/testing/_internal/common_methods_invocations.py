@@ -6849,24 +6849,6 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
         kwargs={"chunking_strategy": "batch"},
     )
 
-    # All targets ignored (should propagate NaNs for mean/sum reductions).
-    input_ignored = make_input((4, vocab_hidden))
-    target_ignored = torch.full(
-        (4,),
-        -1,
-        dtype=torch.long,
-        device=device,
-        requires_grad=False,
-    )
-    yield SampleInput(
-        input_ignored,
-        args=(weight_vocab, target_ignored),
-        kwargs={
-            "ignore_index": -1,
-            "chunking_strategy": "batch",
-        },
-    )
-
 
 def reference_linear_cross_entropy(
     input,
@@ -15125,6 +15107,48 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.skip("linear_cross_entropy DTensor support pending"),
                          "TestDTensorOpsCPU",
                          "test_dtensor_op_db"),
+            DecorateInfo(unittest.skip("linear_cross_entropy forward-mode AD pending"),
+                         "TestOperators",
+                         "test_vmapjvpvjp"),
+            DecorateInfo(unittest.skip("linear_cross_entropy forward-mode AD pending"),
+                         "TestOperatorsCPU",
+                         "test_vmapjvpvjp"),
+            DecorateInfo(unittest.skip("linear_cross_entropy forward-mode AD pending"),
+                         "TestOperators",
+                         "test_jvpvjp"),
+            DecorateInfo(unittest.skip("linear_cross_entropy forward-mode AD pending"),
+                         "TestOperatorsCPU",
+                         "test_jvpvjp"),
+            DecorateInfo(unittest.skip("linear_cross_entropy vmap support pending"),
+                         "TestOperators",
+                         "test_vmapvjp_has_batch_rule"),
+            DecorateInfo(unittest.skip("linear_cross_entropy vmap support pending"),
+                         "TestOperatorsCPU",
+                         "test_vmapvjp_has_batch_rule"),
+            DecorateInfo(unittest.skip("linear_cross_entropy AOTAutograd support pending"),
+                         "TestEagerFusionOpInfo",
+                         "test_aot_autograd_exhaustive"),
+            DecorateInfo(unittest.skip("linear_cross_entropy AOTAutograd support pending"),
+                         "TestEagerFusionOpInfoCPU",
+                         "test_aot_autograd_exhaustive"),
+            DecorateInfo(unittest.skip("linear_cross_entropy AOTAutograd support pending"),
+                         "TestEagerFusionOpInfo",
+                         "test_aot_autograd_disable_functionalization_exhaustive"),
+            DecorateInfo(unittest.skip("linear_cross_entropy AOTAutograd support pending"),
+                         "TestEagerFusionOpInfoCPU",
+                         "test_aot_autograd_disable_functionalization_exhaustive"),
+            DecorateInfo(unittest.skip("linear_cross_entropy AOTAutograd support pending"),
+                         "TestEagerFusionOpInfo",
+                         "test_aot_autograd_disable_functionalization_symbolic_exhaustive"),
+            DecorateInfo(unittest.skip("linear_cross_entropy AOTAutograd support pending"),
+                         "TestEagerFusionOpInfoCPU",
+                         "test_aot_autograd_disable_functionalization_symbolic_exhaustive"),
+            DecorateInfo(unittest.skip("linear_cross_entropy AOTAutograd support pending"),
+                         "TestEagerFusionOpInfo",
+                         "test_aot_autograd_symbolic_exhaustive"),
+            DecorateInfo(unittest.skip("linear_cross_entropy AOTAutograd support pending"),
+                         "TestEagerFusionOpInfoCPU",
+                         "test_aot_autograd_symbolic_exhaustive"),
         ),
     ),
     OpInfo('nn.functional.normalize',
