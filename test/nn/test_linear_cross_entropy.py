@@ -1,10 +1,11 @@
 # Owner(s): ["module: nn"]
 
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
-from torch.testing._internal.common_utils import run_tests, TestCase, skipIfTorchDynamo
+from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
+
+
 class TestLinearCrossEntropyCPU(TestCase):
     def test_all_targets_ignored(self) -> None:
         torch.manual_seed(0)
