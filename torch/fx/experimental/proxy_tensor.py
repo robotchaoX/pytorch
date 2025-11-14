@@ -1036,10 +1036,21 @@ def proxy_call(
         )
         return NotImplemented
 
-    r = maybe_handle_decomp(proxy_mode, func, args, kwargs)
-    if r is not NotImplemented:
-        _maybe_record_pointwise_barrier(func, proxy_mode)
-        return r
+    import torch._dynamo.config as dynamo_config
+
+    decomp_capture_profiler_record_function = True
+    if dynamo_config.capture_profiler_record_function and func in [
+        torch.ops.profiler._record_function_enter.default,
+        torch.ops.profiler._record_function_enter_new.default,
+        torch.ops.profiler._record_function_exit._RecordFunction,
+    ]:
+        decomp_capture_profiler_record_function = False
+
+    if decomp_capture_profiler_record_function:
+        r = maybe_handle_decomp(proxy_mode, func, args, kwargs)
+        if r is not NotImplemented:
+            _maybe_record_pointwise_barrier(func, proxy_mode)
+            return r
 
     # For pre-autograd tracing, we do not want to run CompositeImplicit decomps.
     if (
@@ -1050,6 +1061,7 @@ def proxy_call(
             torch.ops.aten.stride.default,
             torch.ops.aten.storage_offset.default,
         ]
+        and decomp_capture_profiler_record_function
         and autograd_would_have_decomposed(func, flat_args_kwargs)
     ):
         with proxy_mode:

@@ -1064,29 +1064,76 @@ class NullContextVariable(ContextWrappingVariable):
 
 class ProfilerContextVariable(ContextWrappingVariable):
     """
-    This class represents a set of torch profiler context objects, where Dynamo
-    ignores all the side-effects in the __init__, __enter__ and __exit__ methods
-    by treating the object mostly as a `contextlib.nullcontext`, except for edge
-    cases like the `__enter__` method which returns the object itself rather
-    than `None`, per implementation of the torch objects.
+    This class represents torch profiler context objects.
+
+    For record_function: emits torch.ops.profiler._record_function_enter_new
+    to the graph on enter, and torch.ops.profiler._record_function_exit on exit.
+    But if emit_profiler_ops=False, behaves like nullcontext.
+
+    For profile: behaves like nullcontext, ignoring all side-effects.
     """
 
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(target_values=None, **kwargs)
+    _nonvar_fields = {
+        "emit_profiler_ops",
+        *ContextWrappingVariable._nonvar_fields,
+    }
+
+    @staticmethod
+    def create(
+        name: str,
+        args: Any = None,
+        emit_profiler_ops: bool = True,
+        **kwargs: Any,
+    ) -> "ProfilerContextVariable":
+        return ProfilerContextVariable(
+            target_values=[name, args] if emit_profiler_ops else None,
+            initial_values=None,
+            emit_profiler_ops=emit_profiler_ops,
+            **kwargs,
+        )
+
+    def __init__(
+        self,
+        target_values: Any = None,
+        initial_values: Optional[Any] = None,
+        emit_profiler_ops: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            target_values=target_values, initial_values=initial_values, **kwargs
+        )
+        self.emit_profiler_ops = emit_profiler_ops
 
     def enter(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self.emit_profiler_ops:
+            name, args = self.target_values
+            # Create the profiler entry node in the graph
+            self.proxy = tx.output.create_node(
+                "call_function",
+                torch.ops.profiler._record_function_enter_new,
+                (name, args),
+                {},
+            )
         return self
 
     def exit(
         self, tx: "InstructionTranslator", *args: VariableTracker
     ) -> VariableTracker:
+        if self.emit_profiler_ops:
+            # Create the profiler exit node in the graph
+            tx.output.create_node(
+                "call_function",
+                torch.ops.profiler._record_function_exit._RecordFunction,
+                (self.proxy,),
+                {},
+            )
         return variables.ConstantVariable.create(None)
 
     def module_name(self) -> str:
-        return "contextlib"
+        return "torch.autograd.profiler" if self.emit_profiler_ops else "contextlib"
 
     def fn_name(self) -> str:
-        return "nullcontext"
+        return "record_function" if self.emit_profiler_ops else "nullcontext"
 
     def reconstruct(self, cg: "PyCodegen") -> None:
         unimplemented(

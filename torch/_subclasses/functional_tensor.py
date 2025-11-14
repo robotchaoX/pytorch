@@ -95,6 +95,12 @@ class FunctionalTensor(torch.Tensor):
         torch.ops.prim.device.default,  # type: ignore[has-type]
     ]
 
+    profiler_fns = [
+        torch.ops.profiler._record_function_enter.default,
+        torch.ops.profiler._record_function_enter_new.default,
+        torch.ops.profiler._record_function_exit._RecordFunction,
+    ]
+
     # Used by auto_functionalize to determine base of tensors during inference mode.
     _inference_mode_base: Optional["FunctionalTensor"] = None
 
@@ -423,6 +429,7 @@ class FunctionalTensorMode(TorchDispatchMode):
 
         if (
             func not in FunctionalTensor.metadata_fns
+            and func not in FunctionalTensor.profiler_fns
             and _can_decompose(func)
             # Not all funcs from __torch_dispatch__ are actual dispatcher ops,
             # e.g. prim.device
@@ -529,7 +536,10 @@ class FunctionalTensorMode(TorchDispatchMode):
 
                     # Sometimes these functions cannot be directly dispatched to functionalize key
                     # because args are sometimes not functional tensors for some reason?
-                    if func in FunctionalTensor.metadata_fns:
+                    if (
+                        func in FunctionalTensor.metadata_fns
+                        or func in FunctionalTensor.profiler_fns
+                    ):
                         outs_unwrapped = func(*args_unwrapped, **kwargs_unwrapped)
                         outs_wrapped = pytree.tree_map_only(
                             torch.Tensor, wrap, outs_unwrapped

@@ -411,15 +411,40 @@ class TorchCtxManagerClassVariable(BaseTorchVariable):
             # pyrefly: ignore [bad-argument-type]
             return AutocastModeVariable.create(self.value, args, kwargs)
         elif self.value in (
-            # NOTE any class added here must align with the semantic
-            # requirements of `ProfilerContextVariable`.
-            torch.profiler.profile,
             torch.profiler.record_function,
-            torch.autograd.profiler.profile,
             torch.autograd.profiler.record_function,
         ):
+            if config.capture_profiler_record_function:
+                # Extract name and args for record_function
+                # record_function(name: str, args: Optional[str] = None)
+                name = (
+                    args[0].as_python_constant()
+                    if args
+                    else kwargs.get(
+                        "name", variables.ConstantVariable("unknown")
+                    ).as_python_constant()
+                )
+                record_args = None
+                if len(args) > 1:
+                    record_args = args[1].as_python_constant()
+                elif "args" in kwargs:
+                    record_args = kwargs["args"].as_python_constant()
+                return ProfilerContextVariable.create(
+                    name, record_args, emit_profiler_ops=True
+                )
+            else:
+                warning_once(log, "Profiler function %s will be ignored", self.value)
+                return ProfilerContextVariable.create(
+                    "record_function", None, emit_profiler_ops=False
+                )
+        elif self.value in (
+            torch.profiler.profile,
+            torch.autograd.profiler.profile,
+        ):
             warning_once(log, "Profiler function %s will be ignored", self.value)
-            return ProfilerContextVariable()
+            return ProfilerContextVariable.create(
+                "profile", None, emit_profiler_ops=False
+            )
         elif (
             self.value is torch._C.DisableTorchFunctionSubclass
             or self.value is torch._C.DisableTorchFunction
