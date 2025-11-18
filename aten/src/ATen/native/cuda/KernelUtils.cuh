@@ -5,6 +5,7 @@
 #include <cuda_bf16.h>
 #endif
 
+// ROCm 6.3 is planned to have these functions, but until then here they are.
 #if defined(USE_ROCM)
 #include <device_functions.h>
 #include <hip/hip_fp16.h>
