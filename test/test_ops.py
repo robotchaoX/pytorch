@@ -3111,6 +3111,7 @@ class TestTensorMetaProp(TestCase):
                     x = ctx.get_local("x")
                     x_fake = x.as_fake()
                     self.assertTrue(x_fake.requires_grad)
+                    self.assertTrue(x._ComptimeVar__variable.requires_grad)
 
                 def fn(x, *args):
                     inplace_op(x, *args, **sample.kwargs)
@@ -3129,7 +3130,7 @@ class TestTensorMetaProp(TestCase):
                     msg=f"{op.name}: requires_grad mismatch (eager={x_eager.requires_grad}, compiled={x_compiled.requires_grad})",
                 )
 
-                # Test 3: Verify gradients match
+                # # Test 3: Verify gradients match
                 self.assertEqual(
                     args_eager[requires_grad_idx].grad,
                     args_compiled[requires_grad_idx].grad,
@@ -3144,7 +3145,7 @@ class TestTensorMetaProp(TestCase):
                     for pattern in [
                         "out=... arguments don't support automatic differentiation",
                         "the base given to",  # dtype issue
-                        "derivative for", # backward not implemented
+                        "derivative for",  # backward not implemented
                     ]
                 ):
                     continue
