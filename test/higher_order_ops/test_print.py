@@ -243,6 +243,62 @@ x = add_1, y = add_2);  getitem = None
         self.assertEqual(printed_output, "moo tensor([2])\nmoo tensor([1])")
         self.assertEqual(orig_out, opt_out)
 
+    def test_hop_print_inductor(self):
+        def f(x):
+            x1 = x + x
+            torch._higher_order_ops.print("moo {x}", x=x1)
+            x2 = x1 * x1
+            torch._higher_order_ops.print("moo {x}", x=x2)
+            x3 = x2 + x2
+            return (x1, x3)
+
+        x = torch.randn(3, 3)
+        opt_f = torch.compile(backend="inductor", fullgraph=True)(f)
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            opt_f(x)
+            printed_output = mock_stdout.getvalue().strip()
+
+        self.assertEqual(
+            printed_output,
+            f"moo {x * 2}\nmoo {x * 2 * x * 2}",
+        )
+
+    def test_compile_inductor(self):
+        def f(x):
+            torch.ops.aten._print("moo")
+            res = x + x
+            torch.ops.aten._print("moo")
+            return res
+
+        inputs = (torch.randn(2, 3),)
+
+        res = torch.compile(f, backend="inductor")(*inputs)
+        self.assertEqual(True, torch.allclose(res, f(*inputs)))
+
+    def test_compile_inductor_hop_print(self):
+        def f(x):
+            torch._higher_order_ops.print("moo")
+            res = x + x
+            torch._higher_order_ops.print("moo")
+            return res
+
+        inputs = (torch.randn(2, 3),)
+
+        res = torch.compile(f, backend="inductor")(*inputs)
+        self.assertEqual(True, torch.allclose(res, f(*inputs)))
+
+    def test_compile_inductor_hop_print_kwargs(self):
+        def f(x):
+            torch._higher_order_ops.print("moo hop{x}", x=x)
+            res = x + x
+            torch._higher_order_ops.print("moo {x}", x=res)
+            return res
+
+        inputs = (torch.randn(2, 3),)
+
+        res = torch.compile(f, backend="inductor")(*inputs)
+        self.assertEqual(True, torch.allclose(res, f(*inputs)))
+
 
 if __name__ == "__main__":
     run_tests()
