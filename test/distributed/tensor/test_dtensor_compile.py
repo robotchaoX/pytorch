@@ -212,8 +212,8 @@ def forward(self, b_parametrizations_buffer_original0, x):
     _assert_tensor_metadata = torch.ops.aten._assert_tensor_metadata.default(x, None, None, torch.float64, device = device(type='cpu'), layout = torch.strided);  _assert_tensor_metadata = None
     _to_copy = torch.ops.aten._to_copy.default(x, dtype = torch.float64, layout = torch.strided, device = device(type='cuda', index=0));  x = None
     view = torch.ops.aten.view.default(_to_copy, [4, 4]);  _to_copy = None
-    add = torch.ops.aten.add.Tensor(b_parametrizations_buffer_original0, view);  b_parametrizations_buffer_original0 = view = None
-    view_1 = torch.ops.aten.view.default(add, [4, 4]);  add = None
+    add_1 = torch.ops.aten.add.Tensor(b_parametrizations_buffer_original0, view);  b_parametrizations_buffer_original0 = view = None
+    view_1 = torch.ops.aten.view.default(add_1, [4, 4]);  add_1 = None
     return (view_1,)""",  # noqa: B950
         )
 
@@ -353,9 +353,6 @@ def forward(self, b_parametrizations_buffer_original0, x):
         self.assertEqual(res, ref)
 
     @skipIfHpu
-    @unittest.skip(
-        "DTensor + dynamic fails - s77 + 8 is not tracked with proxy .. proxy_tensor.PythonKeyTracer"
-    )
     def test_dtensor_dynamic_slice(self):
         mesh = DeviceMesh(self.device_type, torch.arange(self.world_size))
 
@@ -397,9 +394,6 @@ def forward(self, b_parametrizations_buffer_original0, x):
             res = opt_fn(x)
         self.assertEqual(res, ref)
 
-    @unittest.skip(
-        "DTensor + dynamic fails - s77 + 8 is not tracked with proxy .. proxy_tensor.PythonKeyTracer"
-    )
     def test_dtensor_dynamic_cat(self):
         mesh = DeviceMesh(self.device_type, torch.arange(self.world_size))
 
@@ -480,6 +474,13 @@ def forward(self, b_parametrizations_buffer_original0, x):
                 [[Replicate(), Replicate()], [Replicate(), Replicate()]],
                 [[Replicate(), Shard(0)], [Replicate(), Replicate()]],
                 [[Replicate(), Shard(1)], [Replicate(), Shard(0)]],
+                # any of these should pass with redistribution
+                [[Replicate(), Partial()], [Replicate(), Replicate()]],
+                [[Partial(), Partial()], [Partial(), Partial()]],
+                [[Partial(), Partial()], [Shard(0), Replicate()]],
+                [[Replicate(), Shard(0)], [Replicate(), Shard(0)]],
+                [[Shard(0), Shard(1)], [Shard(1), Shard(0)]],
+                [[Partial(), Replicate()], [Shard(0), Shard(0)]],
             ]
         ):
             # create DTensors with unbacked outer/inner sizes
@@ -503,6 +504,52 @@ def forward(self, b_parametrizations_buffer_original0, x):
                 self.assertEqual(tuple(out.shape), (3, 1))
                 self.assertEqual(cnt.frame_count, 1)
                 self.assertEqual(out.shape, eager_out.shape)
+
+            # test on uneven shardings
+            if test_index >= 3:
+                dx = d_randn(20, 17, device_mesh=device_mesh, placements=px)
+                dy = d_randn(17, 5, device_mesh=device_mesh, placements=py)
+                out, eager_out = fn(dx, dy), torch.mm(dx, dy)
+                self.assertEqual(cnt.frame_count, 1)
+                self.assertEqual(out.shape, eager_out.shape)
+
+    def test_dtensor_matmul_cost_upper_bound(self):
+        # use 2x2 mesh for testing
+        dist.destroy_process_group()
+        dist.init_process_group("fake", store=FakeStore(), rank=0, world_size=4)
+        device_mesh = init_device_mesh(self.device_type, (2, 2))
+
+        x_dt = DTensor.from_local(
+            torch.randn(8, 8),
+            device_mesh=device_mesh,
+            placements=[Shard(0), Shard(1)],
+        )
+        y_dt = DTensor.from_local(
+            torch.randn(8, 8),
+            device_mesh=device_mesh,
+            placements=[Shard(1), Shard(0)],
+        )
+        torch._dynamo.decorators.mark_unbacked(x_dt, 0)
+        torch._dynamo.decorators.mark_unbacked(y_dt, 1)
+
+        # large k dim tells compiler it's cheaper to all-gather on x
+        def f1(x, y):
+            torch._check(x.size(0) <= 16)
+            torch._check(y.size(1) <= 16384)
+            return x @ y
+
+        # use aot_eager to hardcode comms decisions
+        out = torch.compile(f1, backend="aot_eager", fullgraph=True)(x_dt, y_dt)
+        self.assertEqual(out.placements, (Shard(1), Partial()))
+
+        # for the reverse, all-gather on y
+        def f2(x, y):
+            torch._check(x.size(0) <= 16384)
+            torch._check(y.size(1) <= 16)
+            return x @ y
+
+        out = torch.compile(f2, backend="aot_eager", fullgraph=True)(x_dt, y_dt)
+        self.assertEqual(out.placements, (Shard(0), Partial()))
 
     def test_dtensor_requires_grad_recompile(self):
         cnt = torch._dynamo.testing.CompileCounterWithBackend("aot_eager")
