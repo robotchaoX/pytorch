@@ -47,11 +47,6 @@ on:
         type: string
         default: ""
         description: If set to any value, upload to GHA. Otherwise upload to S3.
-      s3-bucket:
-        description: S3 bucket to download artifact
-        required: false
-        type: string
-        default: "gha-artifacts"
       disable-monitor:
         description: |
           [Experimental] Disable utilization monitoring for tests.
@@ -160,7 +155,6 @@ jobs:
         uses: ./.github/actions/download-build-artifacts
         with:
           name: ${{ inputs.build-environment }}
-          s3-bucket: ${{ inputs.s3-bucket }}
 
       - name: Parse ref
         id: parse-ref
@@ -351,7 +345,6 @@ jobs:
         with:
           use-gha: ${{ inputs.use-gha }}
           file-suffix: ${{ github.job }}-${{ matrix.config }}-${{ matrix.shard }}-${{ matrix.num_shards }}-${{ matrix.runner }}_${{ steps.get-job-id.outputs.job-id }}
-          s3-bucket: ${{ inputs.s3-bucket }}
 
       - name: Upload utilization stats
         if: ${{ always() && steps.test.conclusion && steps.test.conclusion != 'skipped' && !inputs.disable-monitor }}
