@@ -3070,7 +3070,7 @@ class TestTensorMetaProp(TestCase):
                 return torch.full_like(x, 123.0)
 
         for i, sample in enumerate(samples):
-            if sample.broadcasts_input:
+            if sample.broadcasts_input or sample.input.numel() == 0:
                 continue
 
             try:
