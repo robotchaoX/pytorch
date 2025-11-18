@@ -203,6 +203,15 @@ def gb_to_bytes(gb: float) -> int:
     return int(gb * 1024 * 1024 * 1024)
 
 
+@dataclass
+class _SplitMmRsConfig:
+    # possible values of num_chunks, if multiple are specified,
+    # the biggest value that satisfies other conditions will be picked
+    num_chunks: list[int]
+    # minimum size of matmul arguments after split
+    min_size_after_split: int = 2048
+
+
 class OverlapScheduler:
     """
     Scheduler that reorders operations to maximize compute-collective overlap.
@@ -238,6 +247,7 @@ class OverlapScheduler:
         max_coll_distance: int,
         custom_runtime_estimation: Callable[[fx.Node], float | None] | None,
         collective_estimator: Literal["analytical", "benchmark"],
+        split_mm_rs_config: _SplitMmRsConfig | None = None,
     ):
         self.gm = gm
         self.graph = gm.graph
@@ -249,9 +259,18 @@ class OverlapScheduler:
         self.insert_overlap_deps = insert_overlap_deps
         self.max_compute_pre_fetch = max_compute_pre_fetch
         self.collective_estimator = collective_estimator
+        self.split_mm_rs_config = split_mm_rs_config
 
         # Build structures
         stable_topological_sort(self.graph)
+        if self.split_mm_rs is not None:
+            from .decompose_mm import split_mm_rs
+
+            split_mm_rs(
+                self.graph,
+                split_mm_rs_config.min_size_after_split,
+                split_mm_rs_config.num_chunks,
+            )
         self.nodes = list(self.graph.nodes)
         self.node_idx = {n: i for i, n in enumerate(self.nodes)}
         self.node_ancestors: dict[fx.Node, OrderedSet[fx.Node]] = (
