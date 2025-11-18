@@ -15,6 +15,7 @@ from importlib import import_module
 import torch
 import torch._prims as prims
 import torch.utils._pytree as pytree
+from torch._dynamo.comptime import comptime, ComptimeContext
 from torch._prims.context import TorchRefsMode
 from torch._prims_common.wrappers import _maybe_remove_out_wrapper
 from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
@@ -3048,6 +3049,7 @@ class TestTensorMetaProp(TestCase):
         on requires_grad (like custom autograd functions) will take the wrong path,
         leading to silent incorrectness.
         """
+
         inplace_op = op.get_inplace()
         if inplace_op is None:
             self.skipTest("No inplace variant for this op")
@@ -3057,16 +3059,18 @@ class TestTensorMetaProp(TestCase):
         class CustomAutograd(torch.autograd.Function):
             @staticmethod
             def forward(ctx, x):
+                ctx.save_for_backward(x)
                 if x.requires_grad:
-                    ctx.save_for_backward(x)
                     return x * 2
                 else:
                     return x * 1
 
             @staticmethod
             def backward(ctx, grad_out):
+                # Return an obviously wrong gradient (fixed value) to detect
+                # when composite implicit autograd is used vs custom backward
                 (x,) = ctx.saved_tensors
-                return grad_out * 2
+                return torch.full_like(x, 123.0)
 
         for i, sample in enumerate(samples):
             if sample.broadcasts_input:
@@ -3103,9 +3107,18 @@ class TestTensorMetaProp(TestCase):
                 ]
                 args_compiled[requires_grad_idx].requires_grad_(True)
 
+                # Check that the metadata is propagated after the inplace op
+                def compile_time_check(ctx: ComptimeContext) -> None:
+                    x = ctx.get_local("x")
+                    x_fake = x.as_fake()
+                    self.assertTrue(x_fake.requires_grad)
+
                 def fn(x, *args):
                     inplace_op(x, *args, **sample.kwargs)
-                    return CustomAutograd.apply(x)
+                    comptime(compile_time_check)
+                    r = CustomAutograd.apply(x)
+                    comptime(compile_time_check)
+                    return r
 
                 compiled_fn = torch.compile(fn, backend="eager", fullgraph=False)
                 output_compiled = compiled_fn(x_compiled, *args_compiled)
@@ -3121,7 +3134,7 @@ class TestTensorMetaProp(TestCase):
                 self.assertEqual(
                     output_eager,
                     output_compiled,
-                    msg=f"{op.name}: Output mismatch indicates metadata not propagated during tracing (issue #161275)",
+                    msg=f"{op.name}: Output mismatch indicates metadata not propagated during tracing",
                 )
 
             except Exception as e:
