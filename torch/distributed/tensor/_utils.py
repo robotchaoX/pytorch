@@ -183,7 +183,6 @@ def _compute_local_shape_and_global_offset(
 
     return tuple(local_shape), tuple(global_offset)
 
-
 compute_global_tensor_info = torch._C._DTensor_compute_global_tensor_info
 
 
