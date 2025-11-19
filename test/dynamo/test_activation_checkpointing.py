@@ -1844,6 +1844,359 @@ Non-primal fwd outputs from model w/o backward hook: {mod_no_hook_fwd_outputs_no
         self.assertEqual(counter, 1)
 
 
+class ACReorderingTests(torch._dynamo.test_case.TestCase):
+    """Tests for AC reordering optimization in full graph (forward+backward in one graph)."""
+
+    def _get_ac_nodes(self, gm):
+        """Get nodes tagged for AC recomputation."""
+        from torch.utils.checkpoint import CheckpointPolicy
+
+        ac_nodes = []
+        for node in gm.graph.nodes:
+            if node.meta.get("recompute") in [
+                CheckpointPolicy.MUST_RECOMPUTE,
+                CheckpointPolicy.PREFER_RECOMPUTE,
+            ]:
+                ac_nodes.append(node)
+        return ac_nodes
+
+    def _get_backward_nodes(self, gm):
+        """Get nodes tagged as backward."""
+        backward_nodes = []
+        for node in gm.graph.nodes:
+            if node.meta.get("custom", {}).get("backward") is not None:
+                backward_nodes.append(node)
+        return backward_nodes
+
+    def _get_node_order(self, gm):
+        """Get mapping from node to its position in graph."""
+        return {node: idx for idx, node in enumerate(gm.graph.nodes)}
+
+    def _compile_and_capture(self, fn, enable_reordering):
+        """Helper to compile a function and capture the graph."""
+        captured_gm = None
+
+        def compiler(gm, example_inputs):
+            nonlocal captured_gm
+            captured_gm = gm
+            return gm.forward
+
+        backend = aot_autograd(
+            fw_compiler=compiler,
+            bw_compiler=None,
+            partition_fn=None,
+        )
+
+        with torch._functorch.config.patch(
+            enable_inference_mode_ac_reordering=enable_reordering
+        ):
+            compiled_fn = torch.compile(fn, backend=backend, fullgraph=False)
+            result = compiled_fn()
+
+        return result, captured_gm
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+    def test_ac_reordering_simple_forward_backward(self):
+        """AC reordering with checkpoint used in both forward and backward."""
+        torch._dynamo.allow_in_graph(torch.autograd.grad)
+
+        x_data = torch.randn(4, 4)
+        y_data = torch.randn(4, 4)
+
+        def simple_fwd_bwd():
+            x = x_data.detach().requires_grad_(True)
+            y = y_data.detach().requires_grad_(True)
+            z = torch.utils.checkpoint.checkpoint(
+                lambda a, b: torch.sigmoid(torch.matmul(a, b)),
+                x,
+                y,
+                use_reentrant=False,
+            )
+            loss = z.sum()
+
+            with torch.fx.traceback.annotate({"backward": 0}):
+                dx, dy = torch.autograd.grad(loss, (x, y))
+
+            return dx.detach(), dy.detach()
+
+        (dx1, dy1), gm_without = self._compile_and_capture(simple_fwd_bwd, False)
+        (dx2, dy2), gm_with = self._compile_and_capture(simple_fwd_bwd, True)
+
+        # Verify correctness
+        self.assertTrue(torch.allclose(dx1, dx2))
+        self.assertTrue(torch.allclose(dy1, dy2))
+
+        # Verify recomputation: mm and sigmoid recomputed in backward
+        self.assertExpectedInline(
+            gm_with.code.strip(),
+            """\
+def forward(self, arg0_1, arg1_1):
+    mm = torch.ops.aten.mm.default(arg0_1, arg1_1)
+    sigmoid = torch.ops.aten.sigmoid.default(mm);  mm = None
+    sum_1 = torch.ops.aten.sum.default(sigmoid);  sigmoid = None
+    ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
+    expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
+    mm_recomputed = torch.ops.aten.mm.default(arg0_1, arg1_1)
+    sigmoid_recomputed = torch.ops.aten.sigmoid.default(mm_recomputed);  mm_recomputed = None
+    detach_recomputed = torch.ops.aten.detach.default(sigmoid_recomputed);  sigmoid_recomputed = None
+    detach_2 = torch.ops.aten.detach.default(detach_recomputed);  detach_recomputed = None
+    sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand, detach_2);  expand = detach_2 = None
+    t = torch.ops.aten.t.default(arg0_1);  arg0_1 = None
+    mm_2 = torch.ops.aten.mm.default(t, sigmoid_backward);  t = None
+    t_1 = torch.ops.aten.t.default(arg1_1);  arg1_1 = None
+    mm_3 = torch.ops.aten.mm.default(sigmoid_backward, t_1);  sigmoid_backward = t_1 = None
+    detach_3 = torch.ops.aten.detach.default(mm_3);  mm_3 = None
+    detach_4 = torch.ops.aten.detach.default(mm_2);  mm_2 = None
+    return (detach_3, detach_4)""",
+        )
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+    def test_ac_reordering_defers_backward_only_nodes(self):
+        """AC nodes only used in backward are deferred (DCE removes forward version)."""
+        torch._dynamo.allow_in_graph(torch.autograd.grad)
+
+        x_data = torch.randn(4, 4)
+
+        def forward_backward_with_ac():
+            x = x_data.detach().requires_grad_(True)
+            z = torch.utils.checkpoint.checkpoint(
+                lambda a: torch.sin(a), x, use_reentrant=False
+            )
+            loss = z.sum()
+            with torch.fx.traceback.annotate({"backward": 0}):
+                dx = torch.autograd.grad(loss, x)[0]
+            return dx.detach()
+
+        dx1, gm_without = self._compile_and_capture(forward_backward_with_ac, False)
+        dx2, gm_with = self._compile_and_capture(forward_backward_with_ac, True)
+
+        self.assertExpectedInline(
+            str(gm_without.code).strip(),
+            """\
+def forward(self, arg0_1):
+    sin = torch.ops.aten.sin.default(arg0_1)
+    sum_1 = torch.ops.aten.sum.default(sin);  sin = None
+    ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
+    expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
+    cos = torch.ops.aten.cos.default(arg0_1);  arg0_1 = None
+    mul = torch.ops.aten.mul.Tensor(expand, cos);  expand = cos = None
+    detach = torch.ops.aten.detach.default(mul);  mul = None
+    return (detach,)""",
+        )
+
+        self.assertExpectedInline(
+            str(gm_with.code).strip(),
+            """\
+def forward(self, arg0_1):
+    sin = torch.ops.aten.sin.default(arg0_1)
+    sum_1 = torch.ops.aten.sum.default(sin);  sin = None
+    ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
+    expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
+    cos = torch.ops.aten.cos.default(arg0_1);  arg0_1 = None
+    mul = torch.ops.aten.mul.Tensor(expand, cos);  expand = cos = None
+    detach = torch.ops.aten.detach.default(mul);  mul = None
+    return (detach,)""",
+        )
+
+        # Verify correctness
+        self.assertTrue(torch.allclose(dx1, dx2))
+
+        # sin is used in forward (for sum), so it stays in forward
+        # But DCE-based approach still works correctly
+        order_with = self._get_node_order(gm_with)
+        first_bwd_idx = min(order_with[n] for n in self._get_backward_nodes(gm_with))
+        ac_in_fwd = sum(
+            1 for ac in self._get_ac_nodes(gm_with) if order_with[ac] < first_bwd_idx
+        )
+        # sin is needed for forward, so it's kept (DCE doesn't remove it)
+        self.assertEqual(ac_in_fwd, 1)
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+    def test_ac_reordering_graph_structure(self):
+        """Verify graph structure with AC reordering enabled."""
+        torch._dynamo.allow_in_graph(torch.autograd.grad)
+
+        x_data = torch.randn(4, 4)
+        y_data = torch.randn(4, 4)
+
+        def simple_fwd_bwd():
+            x = x_data.detach().requires_grad_(True)
+            y = y_data.detach().requires_grad_(True)
+            z = torch.utils.checkpoint.checkpoint(
+                lambda a, b: torch.matmul(a, b), x, y, use_reentrant=False
+            )
+            loss = z.sum()
+            with torch.fx.traceback.annotate({"backward": 0}):
+                dx, dy = torch.autograd.grad(loss, (x, y))
+            return dx.detach(), dy.detach()
+
+        _, captured_gm = self._compile_and_capture(simple_fwd_bwd, True)
+
+        # mm used in forward only (sum consumes it), DCE removes it
+        self.assertExpectedInline(
+            captured_gm.code.strip(),
+            """\
+def forward(self, arg0_1, arg1_1):
+    mm = torch.ops.aten.mm.default(arg0_1, arg1_1)
+    sum_1 = torch.ops.aten.sum.default(mm);  mm = None
+    ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
+    expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
+    t = torch.ops.aten.t.default(arg0_1);  arg0_1 = None
+    mm_1 = torch.ops.aten.mm.default(t, expand);  t = None
+    t_1 = torch.ops.aten.t.default(arg1_1);  arg1_1 = None
+    mm_2 = torch.ops.aten.mm.default(expand, t_1);  expand = t_1 = None
+    detach = torch.ops.aten.detach.default(mm_2);  mm_2 = None
+    detach_1 = torch.ops.aten.detach.default(mm_1);  mm_1 = None
+    return (detach, detach_1)""",
+        )
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+    def test_ac_reordering_duplicates_nodes_used_in_both_regions(self):
+        """AC nodes used in both forward and backward are duplicated."""
+        torch._dynamo.allow_in_graph(torch.autograd.grad)
+
+        x_data = torch.randn(4, 4)
+        w_data = torch.randn(4, 4)
+
+        def fwd_bwd_with_ac_in_both_regions():
+            x = x_data.detach().requires_grad_(True)
+            w = w_data.detach().requires_grad_(True)
+
+            h = torch.utils.checkpoint.checkpoint(
+                lambda a, b: torch.relu(torch.matmul(a, b)),
+                x,
+                w,
+                use_reentrant=False,
+            )
+            out = h * 2.0  # h used in forward
+            loss = out.sum()
+
+            with torch.fx.traceback.annotate({"backward": 0}):
+                dx, dw = torch.autograd.grad(loss, (x, w))  # relu needs h
+
+            return out.detach(), dx.detach(), dw.detach()
+
+        _, captured_gm = self._compile_and_capture(
+            fwd_bwd_with_ac_in_both_regions, True
+        )
+
+        # mm and relu used in forward, duplicated for backward (relu_backward needs relu output)
+        self.assertExpectedInline(
+            captured_gm.code.strip(),
+            """\
+def forward(self, arg0_1, arg1_1):
+    mm = torch.ops.aten.mm.default(arg0_1, arg1_1)
+    relu = torch.ops.aten.relu.default(mm);  mm = None
+    mul = torch.ops.aten.mul.Tensor(relu, 2.0);  relu = None
+    sum_1 = torch.ops.aten.sum.default(mul)
+    ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
+    expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
+    mul_1 = torch.ops.aten.mul.Tensor(expand, 2.0);  expand = None
+    mm_recomputed = torch.ops.aten.mm.default(arg0_1, arg1_1)
+    relu_recomputed = torch.ops.aten.relu.default(mm_recomputed);  mm_recomputed = None
+    detach_recomputed = torch.ops.aten.detach.default(relu_recomputed);  relu_recomputed = None
+    detach_2 = torch.ops.aten.detach.default(detach_recomputed);  detach_recomputed = None
+    threshold_backward = torch.ops.aten.threshold_backward.default(mul_1, detach_2, 0);  mul_1 = detach_2 = None
+    t = torch.ops.aten.t.default(arg0_1);  arg0_1 = None
+    mm_2 = torch.ops.aten.mm.default(t, threshold_backward);  t = None
+    t_1 = torch.ops.aten.t.default(arg1_1);  arg1_1 = None
+    mm_3 = torch.ops.aten.mm.default(threshold_backward, t_1);  threshold_backward = t_1 = None
+    detach_3 = torch.ops.aten.detach.default(mul);  mul = None
+    detach_4 = torch.ops.aten.detach.default(mm_3);  mm_3 = None
+    detach_5 = torch.ops.aten.detach.default(mm_2);  mm_2 = None
+    return (detach_3, detach_4, detach_5)""",
+        )
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+    def test_ac_reordering_recomputes_checkpointed_ops(self):
+        """Verify AC nodes are recomputed in backward (not just deferred)."""
+        torch._dynamo.allow_in_graph(torch.autograd.grad)
+
+        x_data = torch.randn(4, 4)
+        y_data = torch.randn(4, 4)
+
+        def fwd_bwd_with_checkpoint():
+            x = x_data.detach().requires_grad_(True)
+            y = y_data.detach().requires_grad_(True)
+            z = torch.utils.checkpoint.checkpoint(
+                lambda a, b: torch.sigmoid(torch.matmul(a, b)),
+                x,
+                y,
+                use_reentrant=False,
+            )
+            loss = z.sum()
+            with torch.fx.traceback.annotate({"backward": 0}):
+                dx, dy = torch.autograd.grad(loss, (x, y))
+            return dx.detach(), dy.detach()
+
+        _, gm_with = self._compile_and_capture(fwd_bwd_with_checkpoint, True)
+        _, gm_without = self._compile_and_capture(fwd_bwd_with_checkpoint, False)
+
+        # Count recomputed ops: with reordering has extra mm and sigmoid for recomputation
+        mm_with = sum(
+            1 for n in gm_with.graph.nodes if n.target == torch.ops.aten.mm.default
+        )
+        mm_without = sum(
+            1 for n in gm_without.graph.nodes if n.target == torch.ops.aten.mm.default
+        )
+        sigmoid_with = sum(
+            1 for n in gm_with.graph.nodes if n.target == torch.ops.aten.sigmoid.default
+        )
+        sigmoid_without = sum(
+            1
+            for n in gm_without.graph.nodes
+            if n.target == torch.ops.aten.sigmoid.default
+        )
+
+        # With reordering: 4 mm (1 fwd + 2 bwd grad + 1 recompute), 2 sigmoid (1 fwd + 1 recompute)
+        # Without: 3 mm (1 fwd + 2 bwd grad), 1 sigmoid (1 fwd, saved)
+        self.assertEqual(mm_with, 4, "mm should be recomputed in backward")
+        self.assertEqual(mm_without, 3)
+        self.assertEqual(sigmoid_with, 2, "sigmoid should be recomputed in backward")
+        self.assertEqual(sigmoid_without, 1)
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+    def test_ac_reordering_chain_not_needed_for_forward(self):
+        """AC chain not needed for forward output is fully deferred."""
+        torch._dynamo.allow_in_graph(torch.autograd.grad)
+
+        x_data = torch.randn(4, 4, device="cuda", requires_grad=False)
+        y_data = torch.randn(4, 4, device="cuda", requires_grad=False)
+
+        def fwd_bwd_with_ac_chain():
+            x = x_data.detach().requires_grad_(True)
+            y = y_data.detach().requires_grad_(True)
+
+            # AC chain: both checkpointed, neither used in forward output
+            a = torch.utils.checkpoint.checkpoint(
+                lambda t: t * 2.0, x, use_reentrant=False
+            )
+            b = torch.utils.checkpoint.checkpoint(
+                lambda t: t + 1.0, a, use_reentrant=False
+            )
+            z = (x + y).sum()  # doesn't use a or b
+
+            with torch.fx.traceback.annotate({"backward": 0}):
+                grad_x = torch.autograd.grad(z, x, create_graph=True)[0]
+                loss = (grad_x * b).sum()  # b used only in backward
+                dx = torch.autograd.grad(loss, x)[0]
+            return dx.detach()
+
+        result_with, gm_with = self._compile_and_capture(fwd_bwd_with_ac_chain, True)
+        result_without, _ = self._compile_and_capture(fwd_bwd_with_ac_chain, False)
+
+        # Verify correctness
+        torch.testing.assert_close(result_with, result_without)
+
+        # Both a and b should be deferred (DCE removes from forward)
+        order = self._get_node_order(gm_with)
+        first_bwd_idx = min(order[n] for n in self._get_backward_nodes(gm_with))
+        ac_in_fwd = sum(
+            1 for ac in self._get_ac_nodes(gm_with) if order[ac] < first_bwd_idx
+        )
+        self.assertEqual(ac_in_fwd, 0, "AC chain should be fully deferred")
+
+
 devices = ["cuda", "hpu"]
 instantiate_device_type_tests(
     ActivationCheckpointingViaTagsTests, globals(), only_for=devices
